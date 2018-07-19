@@ -17,8 +17,8 @@ variable "aws_image_id" {
 }
 variable "iam_instance_profile" {
   description = "Enter Instance ROle for the Ec2 machine"
-  default = ""
 }
+
 
 variable "security_group" {}
 variable "availability_zones" {

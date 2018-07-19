@@ -1,0 +1,124 @@
+---
+- hosts: localhost
+  remote_user: ec2-user
+  gather_facts: False
+  vars:
+    version: 2.3.1     #valid version 1.3.1, 1.4.0, 1.4.1, 1.5.0, 1.5.1
+    username: ec2-user   #1.5.2, 1.6.0, 1.6.1, 1.6.2
+    jdkversion: jdk1.8.0_172
+    homepath: /home/{{ username }}
+  tasks:
+    - debug: msg="echo \"Install spark-{{ version }}\""
+
+    - name: Download the JDK from S3
+      aws_s3:
+        bucket: datadotz-infracodes
+        object: /binaries/jdk/{{jdkversion}}/jdk.rpm
+        dest: /tmp/jdk.rpm
+        mode: get
+
+    # - name: Download the JDK
+      # get_url: url=https://s3.amazonaws.com/datadotz-infracodes/binaries/jdk/{jdkversion}/jdk.rpm dest=/tmp
+
+    - name: Install jdk
+      shell: chdir=/tmp yum install jdk.rpm -y
+
+
+    - name: stat jdk path
+      stat: path=/usr/java/{{jdkversion}}-amd64/bin/java
+      register: amd_present
+
+    - name: Move foo to bar
+      command: mv /usr/java/{{jdkversion}}-amd64 /usr/java/{{jdkversion}}
+      when: amd_present.stat.exists
+
+    - name: create the file for jps                                                          #create the file for jps result store
+      file: path={{ homepath }}/sparkjps state=touch mode=0555
+
+    - name: Set JAVA_HOME in environment
+      lineinfile: dest=/etc/environment state=present regexp='^JAVA_HOME' line='JAVA_HOME=/usr/java/{{jdkversion}}'
+
+    - name: Set JAVA_HOME
+      shell: export JAVA_HOME=/usr/java/{{jdkversion}}
+
+    - name: Set JAVA_HOME in environment
+      lineinfile: dest=/etc/environment state=present regexp='^JAVA_HOME' line='JAVA_HOME=/usr/java/{{jdkversion}}'
+
+    - name: set Path
+      shell: export PATH=$PATH:$JAVA_HOME/bin
+
+    - stat: path=/tmp/spark.tgz
+      register: result
+
+    - name: Download the Spark from S3
+      aws_s3:
+        bucket: datadotz-infracodes
+        object: /binaries/spark/{{version}}/spark.tgz
+        dest: /tmp/spark.tgz
+        mode: get
+      when: result.stat.exists == False
+
+    # - name: Download spark-{{ version }}                                                  #Download the spark version
+    #   get_url:
+    #     url: https://s3.amazonaws.com/datadotz-infracodes/binaries/spark/{{version}}/spark.tgz
+    #     dest: /tmp
+    #   when: result.stat.exists == False
+
+    - name: Create Spark directory
+      command: mkdir -p /usr/local/bin/spark
+       
+    - name: Extract the spark tar
+      unarchive: src=/tmp/spark.tgz dest=/usr/local/bin/spark
+
+    - name: get the extracted directory
+      command: chdir=/usr/local/bin/spark ls
+      register: directory_name
+
+    - name: cp spark-defaults.conf from template file
+      command: cp /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/spark-defaults.conf.template /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/spark-defaults.conf
+
+    - name: cp spark-env.sh from template file
+      command: cp /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/spark-env.sh.template /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/spark-env.sh
+
+    - name: cp slaves from template file
+      command: cp /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/slaves.template /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/slaves
+
+    - name: Insert a line at the end of a file.
+      lineinfile:
+        path: /usr/local/bin/spark/{{directory_name.stdout_lines[0]}}/conf/spark-env.sh
+        line: export JAVA_HOME=/usr/java/{{jdkversion}}
+
+    - name: Get the local IP
+      command: curl http://169.254.169.254/latest/meta-data/local-ipv4
+      register: local_ip
+
+    - name: Get the Hostname
+      command: hostname
+      register: host_name
+
+    - name: Modify /etc/hosts
+      lineinfile: dest=/etc/hosts
+                  line={{item.line}}
+      with_items:
+        - { line: "{{local_ip.stdout_lines[0]}} {{host_name.stdout_lines[0]}}"}
+
+    - name: create /etc/hosts
+      command: touch /etc/hostname
+    - name: Modify /etc/hosts
+      lineinfile: dest=/etc/hostname
+                  line={{item.line}}
+      with_items:
+        - { line: "{{host_name.stdout_lines[0]}}"}
+
+    - name: Start the Master
+      command: chdir=/usr/local/bin/spark/{{directory_name.stdout_lines[0]}} sbin/start-master.sh
+
+    - name: Start the Slave
+      command: chdir=/usr/local/bin/spark/{{directory_name.stdout_lines[0]}} sbin/start-slave.sh spark://{{local_ip.stdout_lines[0]}}:7077
+
+    - name: check for spark Deamons
+      command: /usr/java/{{jdkversion}}/bin/jps                #check jps and store in register variable
+      register: daemon
+
+    - local_action: copy content={{ daemon }} dest={{ homepath }}/sparkjps                    #jps result stored in home path
+    - debug: var=daemon.stdout_lines                                                          #To see the jps in terminal
